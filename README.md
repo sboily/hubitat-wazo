@@ -1,6 +1,6 @@
 # Hubitat with Wazo
 
-This is my personal page for the developement with hubitat and wazo-platform.
+This is my personal page for the developement with hubitat and wazo-platform (http://www.wazo-platform.org)
 
 # Drivers
 
