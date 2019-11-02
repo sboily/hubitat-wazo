@@ -25,6 +25,9 @@ preferences {
     input("port", "text", title: "Wazo Server Port", description: "", required:true)
     input("token", "text", title: "Wazo Server token", description: "", required:true)
     input("logEnable", "bool", title: "Enable Debug Logging?:", required: true)
+    input("roomName", "text", title: "Notification Room", required: true, defaultValue: "Hubitat BOT")
+    input("roomUuid", "text", title: "Notification Room UUID", required: false)
+
 }
 
 metadata {
@@ -34,12 +37,13 @@ metadata {
         capability "Actuator"
         command "connectWazo"
         command "disconnectWazo"
+        command "checkMyRoom"
     }
 }
 
 def installed() {
-    sendEvent(name: "DriverAuthor", value: "Sylvain Boily", displayed: true)
-    sendEvent(name: "DriverVersion", value: state.version, displayed: true)
+     sendEvent(name: "DriverAuthor", value: "Sylvain Boily", displayed: true)
+     sendEvent(name: "DriverVersion", value: state.version, displayed: true)
 }
 
 def updated() {
@@ -109,28 +113,130 @@ def webSocketStatus(String status) {
 }
 
 def sendNotification(String message) {
-    def apiParams = buildMessage(message)
+    data = buildMessage(message)
+    uri = "https://${ip}:${port}/api/chatd/1.0/messages"
 
+    postHttp(myPostResponse, uri, data)
+}
+
+def postHttp(callback, uri, data) {
     def params = [
-        uri: "https://${ip}:${port}/api/chatd/1.0/messages",
+        uri: uri,
 		requestContentType: 'application/json',
 		contentType: 'application/json',
-		body: apiParams
+        headers: ['X-Auth-Token': token],
+		body: data
+    ]
+
+    asynchttpPost(callback, params)
+}
+
+def getHttp(callback, uri) {
+    def params = [
+        uri: uri,
+		requestContentType: 'application/json',
+		contentType: 'application/json',
+        headers: ['X-Auth-Token': token]
     ]
     
-    asynchttpPost('myPostResponse', params)
+    asynchttpGet(callback, params)
+}
+
+def getMyInfoFromToken() {
+    if(logEnable) log.debug "WAZO log: Get Token Info: ${token}"
+    uri = "https://${ip}:${port}/api/auth/0.1/token/${token}"
+    getHttp('getTokenInfo', uri)
+}
+
+def getTokenInfo(response, data) {
+    tenant_uuid = response.json.data.metadata.tenant_uuid
+    user_uuid = response.json.data.metadata.user_uuid
+    wazo_uuid = response.json.data.metadata.xivo_uuid
+
+    if(logEnable) log.debug "WAZO log: Callback get token: ${tenant_uuid}, ${user_uuid}, ${wazo_uuid}"
+
+    createHubitatRoomNotification(tenant_uuid, user_uuid, wazo_uuid)
+}
+
+def checkMyRoom() {
+    if(logEnable) log.debug "WAZO log: Check My Notification Room: ${roomName}"
+
+    uri = "https://${ip}:${port}/api/chatd/1.0/users/me/rooms"
+    getHttp('myGetResponse', uri)
+}
+
+def myGetResponse(response, data) {
+
+    if (response.status == 401) {
+        if(logEnable) log.debug "WAZO log: Authentication failed..."
+        return false
+    }
+
+    else if (response.status == 200) {
+        if (isMyRoomExist(response.json) == true) {
+            if(logEnable) log.debug "WAZO log: Notification Room already exist: ${roomName}"
+            return true
+        }
+        else {
+            if(logEnable) log.debug "WAZO log: Notification Room doesn't exist: ${roomName}"
+            getMyInfoFromToken()
+        }
+    }
+
+    else {
+        if(logEnable) log.debug "WAZO log: Error to check room: ${response.status}"
+    }
+}
+
+def isMyRoomExist(data) {
+    isExist = false
+    data.items.each{
+        if (it.name == roomName) {
+            isExist = true
+            device.updateSetting("roomUuid", it.uuid)
+        }
+    }
+    return isExist
+}
+
+def createHubitatRoomNotification(tenant_uuid, user_uuid, wazo_uuid) {
+    if(logEnable) log.debug "WAZO log: Create Notification Room: ${roomName}"
+
+    data = [
+        name: "Hubitat BOT",
+        users: [
+            [
+                tenant_uuid: tenant_uuid,
+                uuid: "00fbed1c-3ac0-4757-ba70-5709c1aa3024",
+                wazo_uuid: wazo_uuid
+            ],
+            [
+                tenant_uuid: tenant_uuid,
+                uuid: user_uuid,
+                wazo_uuid: wazo_uuid
+            ]
+        ]
+    ]
+    uri = "https://${ip}:${port}/api/chatd/1.0/users/me/rooms"
+
+    postHttp('myPostResponse', uri, data)
+}
+
+def sendMessage(message) {
+    data = [
+        alias: 'Hubitat BOT',
+        content: message
+    ]
+    uri = "https://${ip}:${port}/api/chatd/1.0/users/me/rooms/${roomUuid}/messages"
+    postHttp('myPostResponse', uri, data)
 }
 
 def myPostResponse(response, data) {
-    if(response.status != 200) {
+    if(response.status != 201) {
         log.error "WAZO log: Received HTTP error ${response.status}..."
     } else {
         if(logEnable) log.debug "WAZO log: Message Received by Join API Server ${data}"
     }
-}
-
-def buildMessage(String message) {
-    return { message: message }
 }
 
 def close() {
@@ -150,6 +256,5 @@ def connectWazo() {
 }
 
 def deviceNotification(message) {
-    log.info "Not implemented..."
-    // sendNotification(message)
+    sendMessage(message)
 }
